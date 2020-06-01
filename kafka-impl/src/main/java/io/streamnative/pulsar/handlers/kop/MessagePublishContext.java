@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import lombok.extern.slf4j.Slf4j;
@@ -106,7 +107,8 @@ public final class MessagePublishContext implements PublishContext {
     // publish Kafka records to pulsar topic, handle callback in MessagePublishContext.
     public static void publishMessages(MemoryRecords records,
                                        Topic topic,
-                                       CompletableFuture<PartitionResponse> future) {
+                                       CompletableFuture<PartitionResponse> future,
+                                       ScheduledExecutorService executor) {
 
         // get records size.
         AtomicInteger size = new AtomicInteger(0);
@@ -120,11 +122,28 @@ public final class MessagePublishContext implements PublishContext {
         if (MESSAGE_BATCHED) {
             CompletableFuture<Long> offsetFuture = new CompletableFuture<>();
 
-            ByteBuf headerAndPayload = recordsToByteBuf(records, rec);
-            topic.publishMessage(
-                headerAndPayload,
-                MessagePublishContext.get(
-                    offsetFuture, topic, System.nanoTime()));
+//            ByteBuf headerAndPayload = recordsToByteBuf(records, rec);
+            CompletableFuture<ByteBuf> transFuture = new CompletableFuture<>();
+            //put queue
+            executor.submit(() -> {
+                recordsToByteBuf(records, rec, transFuture);
+            });
+
+            transFuture.whenComplete((headerAndPayload, ex) -> {
+                if (ex != null) {
+                    log.error("record to bytebuf error: ", ex);
+                } else {
+                    topic.publishMessage(
+                            headerAndPayload,
+                            MessagePublishContext.get(
+                                    offsetFuture, topic, System.nanoTime()));
+                }
+            });
+
+//            topic.publishMessage(
+//                headerAndPayload,
+//                MessagePublishContext.get(
+//                    offsetFuture, topic, System.nanoTime()));
 
             offsetFuture.whenComplete((offset, ex) -> {
                 headerAndPayload.release();
